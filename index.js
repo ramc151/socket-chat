@@ -4,6 +4,20 @@ const { join } = require('node:path');
 const { Server } = require('socket.io');
 const sqlite3 = require('sqlite3');
 const { open } = require('sqlite');
+const port = process.env.PORT;
+const { availableParallelism } = require('node:os');
+const cluster = require('node:cluster');
+const { createAdapter, setupPrimary } = require('@socket.io/cluster-adapter');
+
+if (cluster.isPrimary) {
+    const numCPUs = availableParallelism();
+    for (let i = 0; i < numCPUs; i++) {
+        cluster.fork({
+            PORT: 3000 + i
+        })
+    }
+    return setupPrimary();
+}
 
 async function main() {
     const db = await open({
@@ -25,7 +39,8 @@ async function main() {
         connectionStateRecovery: {
             maxDisconnectionDuration: 2 * 60 * 1000,
             skipMiddlewares: true
-        }
+        },
+        adapter: createAdapter()
     });
 
     app.get('/', (req, res) => {
@@ -36,7 +51,7 @@ async function main() {
         socket.on('chat message', async (msg, clientOffset, callback) => {
             let result;
             try {
-                result = await db.run('INSERT INTO messages (content, clientOffset) VALUES (?, ?)', msg, clientOffset);
+                result = await db.run('INSERT INTO messages (content, client_offset) VALUES (?, ?)', msg, clientOffset);
             } catch (e) {
                 if (e.errno === 19) {
                     callback();
@@ -45,7 +60,8 @@ async function main() {
             }
             io.emit('chat message', msg, result.lastID);
             callback();
-        }); 
+        });
+
         if (!socket.recovered) {
             try {
                 await db.each('SELECT id, content FROM messages WHERE id > ?',
@@ -60,8 +76,8 @@ async function main() {
         }
     });
 
-    server.listen(3000, () => {
-        console.log('server running at port no. 3000');
+    server.listen(port, () => {
+        console.log(`server running at port no. ${port}`);
     });
 }
 
